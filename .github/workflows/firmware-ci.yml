@@ -1,0 +1,48 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main, prototype-001]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware-ci.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-collar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Build collar firmware
+        run: pio run -d firmware/collar
+
+      - name: Validate test WAV generator
+        run: |
+          python firmware/collar/tools/make_test_wav.py
+          python - <<'PY'
+          import wave
+          from pathlib import Path
+          path = Path("firmware/collar/data/spot.wav")
+          with wave.open(str(path), "rb") as wav:
+              assert wav.getnchannels() == 1
+              assert wav.getsampwidth() == 2
+              assert wav.getframerate() == 16000
+          print("Prototype audio fixture is valid.")
+          PY
