@@ -4,16 +4,27 @@
 
 namespace speak::prototype {
 
-// Replace this with the first test beacon's BLE address after scanning it.
+// Replace with the Blue Charm BC011 BLE address after scanning it.
 // Keep lowercase for comparison with the ESP32 BLE library's string format.
 inline constexpr char TARGET_SPOT_ADDRESS[] = "00:00:00:00:00:00";
 
-// Prototype proximity behavior. These are engineering defaults, not product canon.
+// Proximity behavior. Entry is deliberately stronger than reset so the collar
+// does not chatter when RSSI wanders around one threshold.
 inline constexpr int TRIGGER_RSSI_DBM = -62;
 inline constexpr int RESET_RSSI_DBM = -72;
-inline constexpr uint32_t DWELL_MS = 3000;
-inline constexpr uint32_t SPOT_LOST_AFTER_MS = 1500;
-inline constexpr uint32_t COOLDOWN_MS = 10000;
+inline constexpr float RSSI_EMA_ALPHA = 0.35F;
+inline constexpr uint32_t SPOT_LOST_AFTER_MS = 1800;
+inline constexpr uint32_t RESET_CONFIRM_MS = 1000;
+inline constexpr uint32_t REENTRY_COOLDOWN_MS = 5000;
+
+// Back-door interaction timeline, measured from confirmed entry into the Spot.
+// The minimum post-playback gap prevents a long phrase from running directly
+// into the next escalation.
+inline constexpr uint32_t INITIAL_DWELL_MS = 2000;
+inline constexpr uint32_t ESCALATION_1_DWELL_MS = 12000;
+inline constexpr uint32_t ESCALATION_2_DWELL_MS = 25000;
+inline constexpr uint32_t ESCALATION_3_DWELL_MS = 40000;
+inline constexpr uint32_t MIN_GAP_AFTER_PLAYBACK_MS = 2500;
 
 // Quiet button: momentary switch from this pin to GND, using INPUT_PULLUP.
 inline constexpr gpio_num_t QUIET_BUTTON_PIN = GPIO_NUM_4;
@@ -24,6 +35,8 @@ inline constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_12;
 inline constexpr gpio_num_t I2S_LRCLK_PIN = GPIO_NUM_11;
 inline constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_10;
 
-inline constexpr char AUDIO_FILE[] = "/spot.wav";
+// Conservative software attenuation for first bench/dog-safe SPL measurements.
+// Increase only after measuring at 3, 6 and 9 inches with the actual enclosure.
+inline constexpr uint8_t AUDIO_GAIN_PERCENT = 30;
 
 }  // namespace speak::prototype

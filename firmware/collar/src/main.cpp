@@ -4,6 +4,9 @@
 #include <BLEScan.h>
 #include <LittleFS.h>
 #include <driver/i2s.h>
+#include <esp_system.h>
+
+#include <cstring>
 
 #include "prototype_config.h"
 
@@ -11,17 +14,97 @@ namespace {
 
 using namespace speak::prototype;
 
+constexpr size_t MAX_POOL_FILES = 8;
+constexpr size_t MAX_RECENT_HISTORY = 3;
+
+const char* const OUTSIDE_INITIAL_FILES[] = {
+    "/outside/initial_01.wav", "/outside/initial_02.wav",
+    "/outside/initial_03.wav", "/outside/initial_04.wav",
+    "/outside/initial_05.wav", "/outside/initial_06.wav",
+    "/outside/initial_07.wav", "/outside/initial_08.wav",
+};
+
+const char* const OUTSIDE_ESCALATION_1_FILES[] = {
+    "/outside/escalation_1_01.wav", "/outside/escalation_1_02.wav",
+    "/outside/escalation_1_03.wav", "/outside/escalation_1_04.wav",
+    "/outside/escalation_1_05.wav",
+};
+
+const char* const OUTSIDE_ESCALATION_2_FILES[] = {
+    "/outside/escalation_2_01.wav", "/outside/escalation_2_02.wav",
+    "/outside/escalation_2_03.wav", "/outside/escalation_2_04.wav",
+    "/outside/escalation_2_05.wav",
+};
+
+const char* const OUTSIDE_ESCALATION_3_FILES[] = {
+    "/outside/escalation_3_01.wav", "/outside/escalation_3_02.wav",
+};
+
+struct PhrasePool {
+  const char* label;
+  const char* const* files;
+  size_t count;
+  uint8_t historyLimit;
+  uint8_t recent[MAX_RECENT_HISTORY];
+  uint8_t recentCount;
+};
+
+PhrasePool outsideInitial = {
+    "initial", OUTSIDE_INITIAL_FILES,
+    sizeof(OUTSIDE_INITIAL_FILES) / sizeof(OUTSIDE_INITIAL_FILES[0]),
+    3, {0, 0, 0}, 0};
+PhrasePool outsideEscalation1 = {
+    "escalation 1", OUTSIDE_ESCALATION_1_FILES,
+    sizeof(OUTSIDE_ESCALATION_1_FILES) /
+        sizeof(OUTSIDE_ESCALATION_1_FILES[0]),
+    2, {0, 0, 0}, 0};
+PhrasePool outsideEscalation2 = {
+    "escalation 2", OUTSIDE_ESCALATION_2_FILES,
+    sizeof(OUTSIDE_ESCALATION_2_FILES) /
+        sizeof(OUTSIDE_ESCALATION_2_FILES[0]),
+    2, {0, 0, 0}, 0};
+PhrasePool outsideEscalation3 = {
+    "escalation 3", OUTSIDE_ESCALATION_3_FILES,
+    sizeof(OUTSIDE_ESCALATION_3_FILES) /
+        sizeof(OUTSIDE_ESCALATION_3_FILES[0]),
+    1, {0, 0, 0}, 0};
+
+static_assert(sizeof(OUTSIDE_INITIAL_FILES) / sizeof(OUTSIDE_INITIAL_FILES[0]) <=
+                  MAX_POOL_FILES,
+              "Phrase pool exceeds selector capacity");
+
 BLEScan* scanner = nullptr;
-volatile int latestRssi = -127;
-volatile uint32_t lastSeenMs = 0;
+portMUX_TYPE advertisementMux = portMUX_INITIALIZER_UNLOCKED;
+volatile int advertisedRssi = -127;
+volatile uint32_t advertisedSeenMs = 0;
+volatile uint32_t advertisementSequence = 0;
+
+bool haveSmoothedRssi = false;
+float smoothedRssi = -127.0F;
+uint32_t consumedAdvertisementSequence = 0;
+uint32_t latestSeenMs = 0;
+int latestRawRssi = -127;
 
 bool spotActive = false;
-bool triggeredThisVisit = false;
-uint32_t dwellStartedMs = 0;
-uint32_t lastTriggerMs = 0;
+bool resetCandidate = false;
+bool completedSessionBefore = false;
+uint32_t resetCandidateStartedMs = 0;
+uint32_t sessionStartedMs = 0;
+uint32_t lastPlaybackFinishedMs = 0;
+uint32_t lastSessionEndedMs = 0;
 uint32_t quietUntilMs = 0;
 bool lastButtonState = HIGH;
 uint32_t lastButtonChangeMs = 0;
+
+enum class VisitStage : uint8_t {
+  Initial,
+  Escalation1,
+  Escalation2,
+  Escalation3,
+  Complete,
+};
+
+VisitStage nextStage = VisitStage::Initial;
 
 struct WavInfo {
   uint32_t sampleRate = 0;
@@ -53,7 +136,8 @@ bool readWavHeader(File& file, WavInfo& info) {
   if (file.read(reinterpret_cast<uint8_t*>(riff), 4) != 4) return false;
   (void)readU32(file);
   if (file.read(reinterpret_cast<uint8_t*>(wave), 4) != 4) return false;
-  if (memcmp(riff, "RIFF", 4) != 0 || memcmp(wave, "WAVE", 4) != 0) return false;
+  if (memcmp(riff, "RIFF", 4) != 0 || memcmp(wave, "WAVE", 4) != 0)
+    return false;
 
   bool foundFmt = false;
   bool foundData = false;
@@ -85,7 +169,8 @@ bool readWavHeader(File& file, WavInfo& info) {
     file.seek(next);
   }
 
-  return foundFmt && foundData && info.channels == 1 && info.bitsPerSample == 16;
+  return foundFmt && foundData && info.channels == 1 &&
+         info.bitsPerSample == 16;
 }
 
 bool configureI2S(uint32_t sampleRate) {
@@ -111,9 +196,24 @@ bool configureI2S(uint32_t sampleRate) {
   };
 
   i2s_driver_uninstall(I2S_NUM_0);
-  if (i2s_driver_install(I2S_NUM_0, &config, 0, nullptr) != ESP_OK) return false;
+  if (i2s_driver_install(I2S_NUM_0, &config, 0, nullptr) != ESP_OK)
+    return false;
   if (i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) return false;
-  return i2s_set_clk(I2S_NUM_0, sampleRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO) == ESP_OK;
+  return i2s_set_clk(I2S_NUM_0, sampleRate, I2S_BITS_PER_SAMPLE_16BIT,
+                     I2S_CHANNEL_MONO) == ESP_OK;
+}
+
+void attenuatePcm16(uint8_t* buffer, size_t bytes) {
+  for (size_t i = 0; i + 1 < bytes; i += 2) {
+    const int16_t sample = static_cast<int16_t>(
+        static_cast<uint16_t>(buffer[i]) |
+        (static_cast<uint16_t>(buffer[i + 1]) << 8));
+    const int32_t scaled =
+        (static_cast<int32_t>(sample) * AUDIO_GAIN_PERCENT) / 100;
+    const int16_t output = static_cast<int16_t>(scaled);
+    buffer[i] = static_cast<uint8_t>(output & 0xFF);
+    buffer[i + 1] = static_cast<uint8_t>((output >> 8) & 0xFF);
+  }
 }
 
 bool playWav(const char* path) {
@@ -125,7 +225,8 @@ bool playWav(const char* path) {
 
   WavInfo info;
   if (!readWavHeader(file, info)) {
-    Serial.println("[audio] unsupported WAV; require 16-bit mono PCM");
+    Serial.printf("[audio] unsupported WAV %s; require 16-bit mono PCM\n",
+                  path);
     file.close();
     return false;
   }
@@ -140,16 +241,30 @@ bool playWav(const char* path) {
   uint32_t remaining = info.dataSize;
   uint8_t buffer[512];
 
-  Serial.printf("[audio] play %s @ %lu Hz\n", path, static_cast<unsigned long>(info.sampleRate));
+  Serial.printf("[audio] play %s @ %lu Hz, gain %u%%\n", path,
+                static_cast<unsigned long>(info.sampleRate),
+                static_cast<unsigned>(AUDIO_GAIN_PERCENT));
 
   while (remaining > 0) {
-    const size_t requested = min(sizeof(buffer), static_cast<size_t>(remaining));
+    const size_t requested =
+        remaining < sizeof(buffer) ? static_cast<size_t>(remaining)
+                                   : sizeof(buffer);
     const size_t read = file.read(buffer, requested);
     if (read == 0) break;
 
+    attenuatePcm16(buffer, read);
+
     size_t written = 0;
-    if (i2s_write(I2S_NUM_0, buffer, read, &written, portMAX_DELAY) != ESP_OK) {
+    if (i2s_write(I2S_NUM_0, buffer, read, &written, portMAX_DELAY) !=
+        ESP_OK) {
       Serial.println("[audio] write failed");
+      file.close();
+      return false;
+    }
+    if (written != read) {
+      Serial.printf("[audio] short write: %u/%u bytes\n",
+                    static_cast<unsigned>(written),
+                    static_cast<unsigned>(read));
       file.close();
       return false;
     }
@@ -161,16 +276,113 @@ bool playWav(const char* path) {
   return remaining == 0;
 }
 
+bool isRecent(const PhrasePool& pool, uint8_t index) {
+  for (uint8_t i = 0; i < pool.recentCount; ++i) {
+    if (pool.recent[i] == index) return true;
+  }
+  return false;
+}
+
+void rememberPhrase(PhrasePool& pool, uint8_t index) {
+  if (pool.count <= 1 || pool.historyLimit == 0) return;
+
+  uint8_t limit = pool.historyLimit;
+  if (limit > MAX_RECENT_HISTORY) limit = MAX_RECENT_HISTORY;
+  if (limit >= pool.count) limit = static_cast<uint8_t>(pool.count - 1);
+
+  if (pool.recentCount < limit) {
+    pool.recent[pool.recentCount++] = index;
+    return;
+  }
+
+  for (uint8_t i = 1; i < limit; ++i) {
+    pool.recent[i - 1] = pool.recent[i];
+  }
+  pool.recent[limit - 1] = index;
+}
+
+int selectPhraseIndex(const PhrasePool& pool, uint32_t excludedMask,
+                      bool ignoreHistory) {
+  uint8_t candidates[MAX_POOL_FILES];
+  size_t candidateCount = 0;
+
+  for (size_t i = 0; i < pool.count && i < MAX_POOL_FILES; ++i) {
+    if ((excludedMask & (1UL << i)) != 0) continue;
+    if (!ignoreHistory && isRecent(pool, static_cast<uint8_t>(i))) continue;
+    candidates[candidateCount++] = static_cast<uint8_t>(i);
+  }
+
+  if (candidateCount == 0) return -1;
+  return candidates[esp_random() % candidateCount];
+}
+
+bool playRandomPhrase(PhrasePool& pool) {
+  uint32_t attemptedMask = 0;
+
+  for (size_t attempt = 0; attempt < pool.count; ++attempt) {
+    int selected = selectPhraseIndex(pool, attemptedMask, false);
+    if (selected < 0) selected = selectPhraseIndex(pool, attemptedMask, true);
+    if (selected < 0) break;
+
+    attemptedMask |= (1UL << selected);
+    const char* path = pool.files[selected];
+    Serial.printf("[phrase] %s selected %u/%u: %s\n", pool.label,
+                  static_cast<unsigned>(selected + 1),
+                  static_cast<unsigned>(pool.count), path);
+
+    if (playWav(path)) {
+      rememberPhrase(pool, static_cast<uint8_t>(selected));
+      return true;
+    }
+  }
+
+  Serial.printf("[phrase] no playable files in %s pool\n", pool.label);
+  return false;
+}
+
 class SpotAdvertisementCallbacks final : public BLEAdvertisedDeviceCallbacks {
  public:
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     const String address = advertisedDevice.getAddress().toString().c_str();
     if (!address.equalsIgnoreCase(TARGET_SPOT_ADDRESS)) return;
 
-    latestRssi = advertisedDevice.getRSSI();
-    lastSeenMs = millis();
+    portENTER_CRITICAL(&advertisementMux);
+    advertisedRssi = advertisedDevice.getRSSI();
+    advertisedSeenMs = millis();
+    ++advertisementSequence;
+    portEXIT_CRITICAL(&advertisementMux);
   }
 };
+
+void updateSmoothedRssi() {
+  int raw = -127;
+  uint32_t seen = 0;
+  uint32_t sequence = 0;
+
+  portENTER_CRITICAL(&advertisementMux);
+  raw = advertisedRssi;
+  seen = advertisedSeenMs;
+  sequence = advertisementSequence;
+  portEXIT_CRITICAL(&advertisementMux);
+
+  latestSeenMs = seen;
+  latestRawRssi = raw;
+  if (sequence == consumedAdvertisementSequence) return;
+
+  consumedAdvertisementSequence = sequence;
+  if (!haveSmoothedRssi) {
+    smoothedRssi = static_cast<float>(raw);
+    haveSmoothedRssi = true;
+  } else {
+    smoothedRssi = RSSI_EMA_ALPHA * static_cast<float>(raw) +
+                   (1.0F - RSSI_EMA_ALPHA) * smoothedRssi;
+  }
+}
+
+int roundedSmoothedRssi() {
+  return static_cast<int>(smoothedRssi >= 0.0F ? smoothedRssi + 0.5F
+                                               : smoothedRssi - 0.5F);
+}
 
 bool quietNow(uint32_t now) {
   return static_cast<int32_t>(quietUntilMs - now) > 0;
@@ -196,48 +408,177 @@ void handleQuietButton(uint32_t now) {
   }
 }
 
+void startSession(uint32_t now) {
+  spotActive = true;
+  resetCandidate = false;
+  resetCandidateStartedMs = 0;
+  sessionStartedMs = now;
+  lastPlaybackFinishedMs = 0;
+  nextStage = VisitStage::Initial;
+  Serial.printf("[spot] back-door session started, raw %d dBm, smoothed %d dBm\n",
+                latestRawRssi, roundedSmoothedRssi());
+}
+
+void endSession(uint32_t now, const char* reason) {
+  const uint32_t elapsed = spotActive ? now - sessionStartedMs : 0;
+  spotActive = false;
+  resetCandidate = false;
+  resetCandidateStartedMs = 0;
+  sessionStartedMs = 0;
+  lastPlaybackFinishedMs = 0;
+  nextStage = VisitStage::Initial;
+  lastSessionEndedMs = now;
+  completedSessionBefore = true;
+  Serial.printf("[spot] session reset after %lu ms: %s\n",
+                static_cast<unsigned long>(elapsed), reason);
+}
+
+uint32_t stageDwellMs(VisitStage stage) {
+  switch (stage) {
+    case VisitStage::Initial:
+      return INITIAL_DWELL_MS;
+    case VisitStage::Escalation1:
+      return ESCALATION_1_DWELL_MS;
+    case VisitStage::Escalation2:
+      return ESCALATION_2_DWELL_MS;
+    case VisitStage::Escalation3:
+      return ESCALATION_3_DWELL_MS;
+    case VisitStage::Complete:
+      return UINT32_MAX;
+  }
+  return UINT32_MAX;
+}
+
+PhrasePool* stagePool(VisitStage stage) {
+  switch (stage) {
+    case VisitStage::Initial:
+      return &outsideInitial;
+    case VisitStage::Escalation1:
+      return &outsideEscalation1;
+    case VisitStage::Escalation2:
+      return &outsideEscalation2;
+    case VisitStage::Escalation3:
+      return &outsideEscalation3;
+    case VisitStage::Complete:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+VisitStage followingStage(VisitStage stage) {
+  switch (stage) {
+    case VisitStage::Initial:
+      return VisitStage::Escalation1;
+    case VisitStage::Escalation1:
+      return VisitStage::Escalation2;
+    case VisitStage::Escalation2:
+      return VisitStage::Escalation3;
+    case VisitStage::Escalation3:
+    case VisitStage::Complete:
+      return VisitStage::Complete;
+  }
+  return VisitStage::Complete;
+}
+
+bool playbackGapSatisfied(uint32_t now) {
+  return lastPlaybackFinishedMs == 0 ||
+         now - lastPlaybackFinishedMs >= MIN_GAP_AFTER_PLAYBACK_MS;
+}
+
+void handleDueStage(uint32_t now) {
+  if (nextStage == VisitStage::Complete) return;
+
+  const uint32_t elapsed = now - sessionStartedMs;
+  const uint32_t dueAt = stageDwellMs(nextStage);
+  if (elapsed < dueAt || !playbackGapSatisfied(now)) return;
+
+  PhrasePool* pool = stagePool(nextStage);
+  if (pool == nullptr) {
+    nextStage = VisitStage::Complete;
+    return;
+  }
+
+  Serial.printf("[stage] %s due at %lu ms (elapsed %lu ms)\n", pool->label,
+                static_cast<unsigned long>(dueAt),
+                static_cast<unsigned long>(elapsed));
+
+  if (quietNow(now)) {
+    Serial.printf("[stage] Quiet Mode suppressed %s\n", pool->label);
+    lastPlaybackFinishedMs = now;
+  } else {
+    const bool played = playRandomPhrase(*pool);
+    lastPlaybackFinishedMs = millis();
+    Serial.printf("[stage] %s %s\n", pool->label,
+                  played ? "playback complete" : "playback unavailable");
+  }
+
+  nextStage = followingStage(nextStage);
+  if (nextStage == VisitStage::Complete) {
+    Serial.println("[stage] final escalation complete; waiting for Spot exit");
+  }
+}
+
 void handleSpotState(uint32_t now) {
-  const bool recentlySeen = (now - lastSeenMs) <= SPOT_LOST_AFTER_MS;
-  const int rssi = latestRssi;
+  updateSmoothedRssi();
+
+  const bool recentlySeen =
+      latestSeenMs != 0 && (now - latestSeenMs) <= SPOT_LOST_AFTER_MS;
+  const int rssi = roundedSmoothedRssi();
 
   if (!spotActive) {
-    if (recentlySeen && rssi >= TRIGGER_RSSI_DBM) {
-      spotActive = true;
-      dwellStartedMs = now;
-      Serial.printf("[spot] entered trigger zone, RSSI %d dBm\n", rssi);
+    const bool cooledDown = !completedSessionBefore ||
+                            (now - lastSessionEndedMs) >= REENTRY_COOLDOWN_MS;
+    if (cooledDown && recentlySeen && haveSmoothedRssi &&
+        rssi >= TRIGGER_RSSI_DBM) {
+      startSession(now);
     }
     return;
   }
 
-  if (!recentlySeen || rssi <= RESET_RSSI_DBM) {
-    spotActive = false;
-    triggeredThisVisit = false;
-    dwellStartedMs = 0;
-    Serial.printf("[spot] exited/reset, RSSI %d dBm\n", rssi);
+  if (!recentlySeen) {
+    endSession(now, "beacon no longer seen");
     return;
   }
 
-  const bool dwellSatisfied = (now - dwellStartedMs) >= DWELL_MS;
-  const bool cooledDown = (now - lastTriggerMs) >= COOLDOWN_MS;
-
-  if (dwellSatisfied && !triggeredThisVisit && cooledDown) {
-    triggeredThisVisit = true;
-
-    if (quietNow(now)) {
-      Serial.println("[spot] qualified but Quiet Mode suppressed playback");
+  if (rssi <= RESET_RSSI_DBM) {
+    if (!resetCandidate) {
+      resetCandidate = true;
+      resetCandidateStartedMs = now;
+      Serial.printf("[spot] reset candidate, smoothed RSSI %d dBm\n", rssi);
+    } else if (now - resetCandidateStartedMs >= RESET_CONFIRM_MS) {
+      endSession(now, "sustained exit RSSI");
       return;
     }
+    return;  // Do not escalate while the dog appears to be leaving the Spot.
+  } else if (resetCandidate) {
+    resetCandidate = false;
+    resetCandidateStartedMs = 0;
+    Serial.printf("[spot] reset cancelled, smoothed RSSI recovered to %d dBm\n",
+                  rssi);
+  }
 
-    Serial.printf("[spot] QUALIFIED after %lu ms at RSSI %d dBm\n",
-                  static_cast<unsigned long>(now - dwellStartedMs), rssi);
+  handleDueStage(now);
+}
 
-    if (playWav(AUDIO_FILE)) {
-      lastTriggerMs = millis();
-      Serial.println("[spot] playback complete");
-    } else {
-      Serial.println("[spot] playback failed; remaining silent");
+void logAudioInventory() {
+  const PhrasePool* pools[] = {&outsideInitial, &outsideEscalation1,
+                               &outsideEscalation2, &outsideEscalation3};
+  size_t present = 0;
+  size_t expected = 0;
+
+  for (const PhrasePool* pool : pools) {
+    expected += pool->count;
+    for (size_t i = 0; i < pool->count; ++i) {
+      if (LittleFS.exists(pool->files[i])) {
+        ++present;
+      } else {
+        Serial.printf("[fs] missing %s\n", pool->files[i]);
+      }
     }
   }
+  Serial.printf("[fs] phrase inventory %u/%u files present\n",
+                static_cast<unsigned>(present),
+                static_cast<unsigned>(expected));
 }
 
 }  // namespace
@@ -245,7 +586,7 @@ void handleSpotState(uint32_t now) {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\nSpeak! Prototype 001");
+  Serial.println("\nSpeak! Prototype 001 - Back Door Potty Test");
 
   pinMode(QUIET_BUTTON_PIN, INPUT_PULLUP);
 
@@ -253,6 +594,7 @@ void setup() {
     Serial.println("[fs] LittleFS mount failed; audio unavailable");
   } else {
     Serial.println("[fs] LittleFS ready");
+    logAudioInventory();
   }
 
   BLEDevice::init("Speak-Prototype-001");
@@ -264,9 +606,13 @@ void setup() {
   scanner->start(0, nullptr, false);
 
   Serial.printf("[ble] scanning continuously for %s\n", TARGET_SPOT_ADDRESS);
-  Serial.printf("[spot] enter >= %d dBm, reset <= %d dBm, dwell %lu ms\n",
-                TRIGGER_RSSI_DBM, RESET_RSSI_DBM,
-                static_cast<unsigned long>(DWELL_MS));
+  Serial.printf("[spot] enter >= %d dBm, reset <= %d dBm, EMA %.2f\n",
+                TRIGGER_RSSI_DBM, RESET_RSSI_DBM, RSSI_EMA_ALPHA);
+  Serial.printf("[timeline] initial %lu, E1 %lu, E2 %lu, E3 %lu ms\n",
+                static_cast<unsigned long>(INITIAL_DWELL_MS),
+                static_cast<unsigned long>(ESCALATION_1_DWELL_MS),
+                static_cast<unsigned long>(ESCALATION_2_DWELL_MS),
+                static_cast<unsigned long>(ESCALATION_3_DWELL_MS));
 }
 
 void loop() {
