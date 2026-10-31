@@ -355,21 +355,34 @@ class SpotAdvertisementCallbacks final : public BLEAdvertisedDeviceCallbacks {
  public:
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     const String address = advertisedDevice.getAddress().toString().c_str();
+    const String name = advertisedDevice.haveName()
+                            ? advertisedDevice.getName().c_str()
+                            : "";
+
+    bool manufacturerMatch = false;
+    if (advertisedDevice.haveManufacturerData()) {
+      const std::string data = advertisedDevice.getManufacturerData();
+      manufacturerMatch =
+          data.size() >= 5 &&
+          data[0] == 'S' &&
+          data[1] == 'P' &&
+          data[2] == 'K' &&
+          static_cast<uint8_t>(data[3]) == 0x01 &&
+          static_cast<uint8_t>(data[4]) == 0x01;
+    }
+
+    const bool nameMatch = name.equalsIgnoreCase("SPEAK-OUTSIDE-001");
+    const bool addressMatch = address.equalsIgnoreCase(TARGET_SPOT_ADDRESS);
+    const bool isTarget = manufacturerMatch || nameMatch || addressMatch;
 
     if (bleDebugUntilMs != 0 &&
         static_cast<int32_t>(bleDebugUntilMs - millis()) > 0) {
-      const String name = advertisedDevice.haveName()
-                              ? advertisedDevice.getName().c_str()
-                              : "";
       Serial.printf("[ble-debug] %s RSSI %d name '%s'%s\n",
                     address.c_str(), advertisedDevice.getRSSI(),
-                    name.c_str(),
-                    address.equalsIgnoreCase(TARGET_SPOT_ADDRESS)
-                        ? "  <TARGET>"
-                        : "");
+                    name.c_str(), isTarget ? "  <TARGET>" : "");
     }
 
-    if (!address.equalsIgnoreCase(TARGET_SPOT_ADDRESS)) return;
+    if (!isTarget) return;
 
     portENTER_CRITICAL(&advertisementMux);
     advertisedRssi = advertisedDevice.getRSSI();
@@ -662,7 +675,9 @@ void setup() {
 
   BLEDevice::init("Speak-Prototype-001");
   scanner = BLEDevice::getScan();
-  scanner->setAdvertisedDeviceCallbacks(new SpotAdvertisementCallbacks(), false);
+  // We need duplicate advertisements: dwell and RSSI smoothing depend on
+  // continuously hearing the same Spot, not merely discovering it once.
+  scanner->setAdvertisedDeviceCallbacks(new SpotAdvertisementCallbacks(), true);
   scanner->setActiveScan(true);
   scanner->setInterval(100);
   scanner->setWindow(90);
