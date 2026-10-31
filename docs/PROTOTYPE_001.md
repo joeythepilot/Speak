@@ -4,33 +4,148 @@
 
 Prototype 001 answers the first product-shaped engineering question:
 
-> Can a collar-sized ESP32-S3 reliably recognize one back-door BLE Spot, distinguish a deliberate wait from a walk-by, play varied speech, and escalate naturally while the dog remains there?
+> Can a wearable ESP32-S3 reliably recognize one back-door BLE Spot, distinguish a deliberate wait from a walk-by, play varied speech, and escalate naturally while the dog remains there?
 
-The prototype is successful when the interaction is repeatable enough to tune around a real dog, a real doorway, and normal household movement.
+The first build stays on the bench until power, audio level, BLE behavior and thermal behavior are proven.
 
-## Hardware and wiring
+## Current hardware
 
-### MAX98357A
+### Collar controller
 
-- BCLK -> GPIO 12
-- LRC / WS -> GPIO 11
-- DIN -> GPIO 10
-- VIN / GND according to the amplifier breakout's documented supply requirements
-- 4 ohm / 3 W speaker -> amplifier output
+- DORHEA ESP32-S3 DevKit C N16R8
+- 16 MB flash / 8 MB PSRAM
+- Use the USB-to-UART Type-C port for initial programming
+- Prototype firmware target: `esp32-s3-n16r8`
+
+### Audio
+
+NULLLAB NS4168 I2S amplifier + matched 4 ohm / 3 W speaker.
+
+Bench wiring:
+
+| ESP32-S3 | NULLLAB amp |
+| --- | --- |
+| 3V3 | VCC |
+| GND | GND |
+| GPIO12 | BCLK |
+| GPIO11 | LRCLK / WS |
+| GPIO10 | DIN |
+
+The speaker plugs only into the amplifier's speaker output. Neither speaker lead is connected to ESP32 ground.
 
 ### Quiet button
 
-- One terminal -> GPIO 4
-- Other terminal -> GND
+- One lead -> GPIO4
+- Other lead -> GND
 - Firmware uses `INPUT_PULLUP`
+- Holding Quiet during boot/reset runs the audio self-test and plays `initial_01.wav`
 
-### Spot
+The Affection button is intentionally left out of the first electrical bring-up.
 
-- Blue Charm BC011 BLE beacon
-- Mount temporarily near the back door, out of Asher's reach
-- Start at low transmitter power and tune from Serial evidence
+### Back Door Spot
 
-Verify the breakout-board labels and supply voltage before applying power.
+Prototype Spots use an ESP32-C3 Super Mini rather than a proprietary beacon.
+
+- Firmware project: `firmware/spot`
+- Advertised name: `SPEAK-OUTSIDE-001`
+- The Spot prints its BLE address at boot
+- Copy that address into `TARGET_SPOT_ADDRESS` in `firmware/collar/include/prototype_config.h`
+
+### Portable power
+
+NULLLAB PM11 integrated power module:
+
+- 1200 mAh LiPo
+- 5 V regulated output up to 1.2 A
+- 3.3 V regulated output up to 800 mA
+- USB-C charging
+- Physical master switch
+
+Do not use the PM11 during initial USB bench bring-up. Later, with USB disconnected, PM11 5V feeds the ESP32 5V pin and PM11 GND feeds ESP32 GND.
+
+## Build order
+
+### Checkpoint 1 - board only
+
+1. Solder the supplied headers to one N16R8 board if they are not already fitted.
+2. Put the board on the breadboard.
+3. Leave PM11, amplifier, buttons and Spot disconnected.
+4. Connect a known-good USB data cable to the board's USB-to-UART Type-C port.
+5. Build and upload `firmware/collar`.
+6. Open Serial Monitor at 115200 baud.
+
+Do not proceed until the controller boots reliably.
+
+### Checkpoint 2 - audio path
+
+1. Disconnect USB power.
+2. Wire the NULLLAB amplifier using the table above.
+3. Plug the matched speaker into the amplifier.
+4. Wire the Quiet button from GPIO4 to GND.
+5. Put the approved WAV library under `firmware/collar/data/outside/`.
+6. Upload the LittleFS filesystem image.
+7. Reconnect USB.
+8. Hold Quiet and press Reset.
+9. The collar should play `initial_01.wav` at the firmware's conservative 30% digital gain.
+
+Do not attach the speaker near Asher yet.
+
+### Checkpoint 3 - acoustic test
+
+Using the final speaker orientation:
+
+1. Measure A-weighted SPL at approximate dog-ear positions: 3, 6 and 9 inches.
+2. Measure intelligibility at 3, 10, 15 and 20 feet in the human-facing direction.
+3. Repeat with normal TV/room noise.
+4. Check for startup pops, clipping and enclosure/amplifier heating.
+
+Do not raise gain from the default until the measured results justify it.
+
+### Checkpoint 4 - first Spot
+
+1. Flash `firmware/spot` to one ESP32-C3 Super Mini.
+2. Open its Serial Monitor at 115200 baud.
+3. Record the printed BLE address.
+4. Paste it into `TARGET_SPOT_ADDRESS` in the collar config.
+5. Rebuild and reflash the collar.
+6. Power the C3 Spot near the test back door.
+7. Observe RSSI and session diagnostics over Serial.
+
+### Checkpoint 5 - interaction test
+
+Verify:
+
+- quick walk-by does not speak
+- intentional dwell does speak
+- initial phrase randomizes
+- escalation 1 / 2 / 3 occur only while presence continues
+- brief RSSI dips do not reset the session
+- confirmed exit rearms a later visit
+- completed session remains silent while the dog simply occupies the area
+
+### Checkpoint 6 - PM11 portable-power test
+
+Only after the USB-powered system works:
+
+1. Disconnect USB from the ESP32.
+2. PM11 5V -> ESP32 5V.
+3. PM11 GND -> ESP32 GND.
+4. Switch PM11 on.
+5. Verify identical boot, BLE and audio behavior.
+6. Measure current draw and runtime.
+
+Do not power the ESP32 from PM11 and its programming USB connection at the same time during Prototype 001 bench testing.
+
+### Checkpoint 7 - enclosure / supervised wear
+
+Only after electrical and acoustic acceptance:
+
+- mount battery/power module rigidly
+- provide strain relief
+- orient speaker outward, away from Asher's ears
+- eliminate sharp edges and exposed conductors
+- verify temperature after extended operation
+- start with short, directly supervised harness/chest tests before collar wear
 
 ## Audio library
 
@@ -51,19 +166,9 @@ Required format:
 - mono
 - 16-bit
 
-Prepare and validate the approved source MP3s:
-
-```bash
-cd firmware/collar
-python tools/prepare_phrase_library.py /path/to/source-mp3-directory
-python tools/validate_phrase_library.py
-```
-
-Then upload the LittleFS filesystem image before uploading firmware.
-
 ## Default interaction timeline
 
-All times are measured from confirmed entry into the trigger zone:
+All times are measured from confirmed entry:
 
 | Stage | Default threshold |
 | --- | ---: |
@@ -72,82 +177,8 @@ All times are measured from confirmed entry into the trigger zone:
 | Escalation 2 | 25 seconds |
 | Escalation 3 | 40 seconds |
 
-A stage also requires at least 2.5 seconds after the previous clip finishes. This prevents a long line from colliding with the next escalation.
+The system also enforces a minimum gap after each clip and recent-phrase suppression.
 
-Each tier remembers recent choices. Initial phrases suppress the previous three selections, Escalations 1 and 2 suppress the previous two, and Escalation 3 suppresses the previous one.
+## Current safety gate
 
-## Proximity behavior
-
-1. Only the configured beacon address is considered.
-2. Incoming RSSI is smoothed with an exponential moving average.
-3. Smoothed RSSI must cross the stronger entry threshold to start a session.
-4. Leaving before the two-second dwell produces no speech.
-5. Reset uses a weaker threshold than entry, preventing threshold chatter.
-6. A weak RSSI must persist for the reset confirmation interval before ending the session.
-7. Complete beacon loss resets the session.
-8. Reentry is ignored briefly after exit to prevent doorway bounce.
-
-All values remain easy to tune in `include/prototype_config.h`.
-
-## Safety gate before dog use
-
-The firmware begins at 30 percent digital amplitude. That is an engineering precaution, not proof of safe acoustic output.
-
-Before attaching the prototype to Asher:
-
-1. Test on the bench using the final speaker and temporary enclosure.
-2. Measure A-weighted SPL at 3, 6 and 9 inches.
-3. Confirm there is no startup pop, clipping, or unexpected maximum-volume output.
-4. Increase gain only from measured evidence.
-5. Begin dog testing under direct supervision.
-
-## Acceptance criteria
-
-Prototype 001 passes when all of the following are demonstrated:
-
-1. Unknown beacons do nothing.
-2. The configured Spot appears in Serial diagnostics.
-3. A quick walk past the door produces no playback.
-4. Remaining in range through initial dwell produces exactly one initial phrase.
-5. Repeated visits vary the selected initial phrase.
-6. The same initial phrase is not repeated within the recent-history window.
-7. Remaining at the door reaches each escalation at the configured stage.
-8. Leaving before a later escalation prevents that escalation.
-9. A brief RSSI dip does not reset the session.
-10. A confirmed exit resets the session and permits a later new visit.
-11. Quiet Mode suppresses any due stage without producing a burst when Quiet ends.
-12. Missing or corrupt assets produce silence and useful diagnostics.
-13. The real 20-file library fits the LittleFS partition with at least 512 KiB reserved.
-14. Measured playback stays within the owner-approved SPL envelope.
-
-## Test matrix
-
-Record at least ten attempts for each ordinary condition:
-
-| Test | Expected |
-| --- | --- |
-| Walk past Spot quickly | 0/10 initial playbacks |
-| Enter trigger distance for less than 2 seconds | 0/10 |
-| Wait at the door through initial dwell | 10/10 initial playbacks |
-| Leave immediately after initial phrase | no escalation |
-| Remain through 12 seconds | one Escalation 1 phrase |
-| Remain through 25 seconds | one Escalation 2 phrase |
-| Remain through 40 seconds | one Escalation 3 phrase |
-| Hover around entry threshold | no rapid session flapping |
-| Leave reset zone, return after cooldown | one new session |
-| Quiet Mode enabled | 0/10 audible stages |
-
-Also log false triggers during ordinary kitchen traffic for at least one hour.
-
-## What comes next
-
-After Prototype 001 passes:
-
-1. Tune beacon power and thresholds from recorded RSSI evidence.
-2. Measure current draw during scanning, dwell, playback and quiet periods.
-3. Test supervised use on Asher at the back door.
-4. Add a second Spot profile without changing the session engine.
-5. Prototype passive object recognition for toys and other deliberate interactions.
-6. Preserve ordered interaction events so Responses and Combos do not require a data-model rewrite.
-
-The mobile app, Live Speak, Community Spots and autonomous AI response remain outside Prototype 001.
+Prototype 001 begins at 30% digital audio gain. This is an engineering precaution, not a certified safe acoustic level. The wearable is not cleared for Asher until SPL, thermal behavior, power behavior and mechanical containment are measured on the actual assembled prototype.
