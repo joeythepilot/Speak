@@ -10,7 +10,7 @@ constexpr char SPOT_NAME[] = "SPEAK-OUTSIDE-001";
 constexpr uint16_t ADVERTISING_INTERVAL = 0x0140;
 
 void printAddress() {
-  const BLEAddress address = BLEDevice::getAddress();
+  BLEAddress address = BLEDevice::getAddress();
   Serial.print("[spot] BLE address: ");
   Serial.println(address.toString().c_str());
 }
