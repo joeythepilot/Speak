@@ -40,3 +40,6 @@ jobs:
 
       - name: Build LittleFS image
         run: pio run -d firmware/collar --target buildfs
+
+      - name: Build Back Door Spot firmware
+        run: pio run -d firmware/spot
