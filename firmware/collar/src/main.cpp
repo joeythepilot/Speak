@@ -595,6 +595,18 @@ void setup() {
   } else {
     Serial.println("[fs] LittleFS ready");
     logAudioInventory();
+
+    // Bench bring-up helper: hold the Quiet button LOW during boot/reset to
+    // prove LittleFS -> I2S -> amplifier -> speaker before BLE is involved.
+    if (digitalRead(QUIET_BUTTON_PIN) == LOW) {
+      Serial.println("[self-test] Quiet held at boot; playing initial_01");
+      playWav(OUTSIDE_INITIAL_FILES[0]);
+      Serial.println("[self-test] complete; release Quiet to continue");
+      while (digitalRead(QUIET_BUTTON_PIN) == LOW) {
+        delay(20);
+      }
+      delay(100);
+    }
   }
 
   BLEDevice::init("Speak-Prototype-001");
