@@ -3,7 +3,7 @@
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <LittleFS.h>
-#include <driver/i2s_std.h>
+#include <driver/i2s.h>
 #include <esp_system.h>
 
 #include <cstring>
@@ -173,84 +173,42 @@ bool readWavHeader(File& file, WavInfo& info) {
          info.bitsPerSample == 16;
 }
 
-i2s_chan_handle_t audioTx = nullptr;
-
-void stopI2S() {
-  if (audioTx != nullptr) {
-    i2s_channel_disable(audioTx);
-    i2s_del_channel(audioTx);
-    audioTx = nullptr;
-  }
-}
-
 bool configureI2S(uint32_t sampleRate) {
-  stopI2S();
-
-  i2s_chan_config_t channelConfig =
-      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-
-  if (i2s_new_channel(&channelConfig, &audioTx, nullptr) != ESP_OK) {
-    audioTx = nullptr;
-    return false;
-  }
-
-  i2s_std_config_t config = {
-      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sampleRate),
-      .slot_cfg =
-          {
-              .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-              .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-              .slot_mode = I2S_SLOT_MODE_MONO,
-              .slot_mask = I2S_STD_SLOT_BOTH,
-              .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
-              .ws_pol = false,
-              .bit_shift = false,
-              .left_align = false,
-              .big_endian = false,
-              .bit_order_lsb = false,
-          },
-      .gpio_cfg =
-          {
-              .mclk = I2S_GPIO_UNUSED,
-              .bclk = I2S_BCLK_PIN,
-              .ws = I2S_LRCLK_PIN,
-              .dout = I2S_DOUT_PIN,
-              .din = I2S_GPIO_UNUSED,
-              .invert_flags =
-                  {
-                      .mclk_inv = false,
-                      .bclk_inv = false,
-                      .ws_inv = false,
-                  },
-          },
+  const i2s_config_t config = {
+      .mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_TX),
+      .sample_rate = sampleRate,
+      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+      .communication_format = I2S_COMM_FORMAT_STAND_MSB,
+      .intr_alloc_flags = 0,
+      .dma_buf_count = 8,
+      .dma_buf_len = 128,
+      .use_apll = false,
+      .tx_desc_auto_clear = true,
+      .fixed_mclk = 0,
   };
 
-  // Match NULLLAB's NS4168 reference framing: 16-bit mono in both slots,
-  // no one-bit Philips shift, MSB aligned to the slot.
-  config.slot_cfg.msb_right = true;
+  const i2s_pin_config_t pins = {
+      .bck_io_num = I2S_BCLK_PIN,
+      .ws_io_num = I2S_LRCLK_PIN,
+      .data_out_num = I2S_DOUT_PIN,
+      .data_in_num = I2S_PIN_NO_CHANGE,
+  };
 
-  if (i2s_channel_init_std_mode(audioTx, &config) != ESP_OK) {
-    stopI2S();
-    return false;
-  }
-  if (i2s_channel_enable(audioTx) != ESP_OK) {
-    stopI2S();
-    return false;
-  }
-  return true;
+  i2s_driver_uninstall(I2S_NUM_0);
+  if (i2s_driver_install(I2S_NUM_0, &config, 0, nullptr) != ESP_OK) return false;
+  if (i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) return false;
+  return i2s_set_clk(I2S_NUM_0, sampleRate, I2S_BITS_PER_SAMPLE_16BIT,
+                     I2S_CHANNEL_STEREO) == ESP_OK;
 }
 
-void attenuatePcm16(uint8_t* buffer, size_t bytes) {
-  for (size_t i = 0; i + 1 < bytes; i += 2) {
-    const int16_t sample = static_cast<int16_t>(
-        static_cast<uint16_t>(buffer[i]) |
-        (static_cast<uint16_t>(buffer[i + 1]) << 8));
-    const int32_t scaled =
-        (static_cast<int32_t>(sample) * AUDIO_GAIN_PERCENT) / 100;
-    const int16_t output = static_cast<int16_t>(scaled);
-    buffer[i] = static_cast<uint8_t>(output & 0xFF);
-    buffer[i + 1] = static_cast<uint8_t>((output >> 8) & 0xFF);
-  }
+int16_t scaledSample(const uint8_t* bytes) {
+  const int16_t sample = static_cast<int16_t>(
+      static_cast<uint16_t>(bytes[0]) |
+      (static_cast<uint16_t>(bytes[1]) << 8));
+  const int32_t scaled =
+      (static_cast<int32_t>(sample) * AUDIO_GAIN_PERCENT) / 100;
+  return static_cast<int16_t>(scaled);
 }
 
 bool playWav(const char* path) {
@@ -276,42 +234,55 @@ bool playWav(const char* path) {
 
   file.seek(info.dataOffset);
   uint32_t remaining = info.dataSize;
-  uint8_t buffer[512];
+
+  // Read mono PCM and duplicate each sample into both LR slots. This matches
+  // NULLLAB's NS4168 reference framing: 16-bit MSB-aligned data in both slots.
+  uint8_t monoBuffer[256];
+  int16_t stereoBuffer[256];  // 128 mono samples -> 256 stereo samples.
 
   Serial.printf("[audio] play %s @ %lu Hz, gain %u%%\\n", path,
                 static_cast<unsigned long>(info.sampleRate),
                 static_cast<unsigned>(AUDIO_GAIN_PERCENT));
 
   while (remaining > 0) {
-    const size_t requested =
-        remaining < sizeof(buffer) ? static_cast<size_t>(remaining)
-                                   : sizeof(buffer);
-    const size_t read = file.read(buffer, requested);
+    size_t requested =
+        remaining < sizeof(monoBuffer) ? static_cast<size_t>(remaining)
+                                       : sizeof(monoBuffer);
+    // 16-bit PCM must stay sample-aligned.
+    requested &= ~static_cast<size_t>(1);
+    if (requested == 0) break;
+
+    const size_t read = file.read(monoBuffer, requested);
     if (read == 0) break;
 
-    attenuatePcm16(buffer, read);
+    const size_t monoSamples = read / 2;
+    for (size_t i = 0; i < monoSamples; ++i) {
+      const int16_t sample = scaledSample(&monoBuffer[i * 2]);
+      stereoBuffer[i * 2] = sample;
+      stereoBuffer[i * 2 + 1] = sample;
+    }
 
+    const size_t stereoBytes = monoSamples * 2 * sizeof(int16_t);
     size_t written = 0;
-    if (i2s_channel_write(audioTx, buffer, read, &written, portMAX_DELAY) !=
-        ESP_OK) {
+    if (i2s_write(I2S_NUM_0, stereoBuffer, stereoBytes, &written,
+                  portMAX_DELAY) != ESP_OK) {
       Serial.println("[audio] write failed");
       file.close();
-      stopI2S();
       return false;
     }
-    if (written != read) {
+    if (written != stereoBytes) {
       Serial.printf("[audio] short write: %u/%u bytes\\n",
                     static_cast<unsigned>(written),
-                    static_cast<unsigned>(read));
+                    static_cast<unsigned>(stereoBytes));
       file.close();
-      stopI2S();
       return false;
     }
+
     remaining -= read;
   }
 
+  i2s_zero_dma_buffer(I2S_NUM_0);
   file.close();
-  stopI2S();
   return remaining == 0;
 }
 
