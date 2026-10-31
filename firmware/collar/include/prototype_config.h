@@ -40,6 +40,6 @@ inline constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_10;
 
 // Conservative software attenuation for first bench/dog-safe SPL measurements.
 // Increase only after measuring at 3, 6 and 9 inches with the actual enclosure.
-inline constexpr uint8_t AUDIO_GAIN_PERCENT = 40;
+inline constexpr uint8_t AUDIO_GAIN_PERCENT = 50;
 
 }  // namespace speak::prototype
