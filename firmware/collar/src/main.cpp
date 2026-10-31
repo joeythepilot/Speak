@@ -591,6 +591,25 @@ void logAudioInventory() {
                 static_cast<unsigned>(expected));
 }
 
+void handleBenchSerial() {
+  if (!Serial.available()) return;
+
+  const char command = static_cast<char>(Serial.read());
+  if (command != 't' && command != 'T') return;
+
+  Serial.println("[bench] test requested; playing initial_01 in 5 seconds");
+  for (int remaining = 5; remaining >= 1; --remaining) {
+    Serial.printf("[bench] %d...\n", remaining);
+    delay(1000);
+  }
+
+  if (playWav(OUTSIDE_INITIAL_FILES[0])) {
+    Serial.println("[bench] playback complete");
+  } else {
+    Serial.println("[bench] playback failed");
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -639,6 +658,7 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  handleBenchSerial();
   handleQuietButton(now);
   handleSpotState(now);
   delay(20);
