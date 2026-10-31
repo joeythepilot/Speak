@@ -7,7 +7,7 @@ namespace speak::prototype {
 // Replace with the Prototype 001 ESP32-C3 Spot's BLE address after we flash
 // the Spot firmware and read its address from Serial. Keep lowercase for
 // comparison with the ESP32 BLE library's string format.
-inline constexpr char TARGET_SPOT_ADDRESS[] = "00:00:00:00:00:00";
+inline constexpr char TARGET_SPOT_ADDRESS[] = "70:af:09:2a:7d:4e";
 
 // Proximity behavior. Entry is deliberately stronger than reset so the collar
 // does not chatter when RSSI wanders around one threshold.
