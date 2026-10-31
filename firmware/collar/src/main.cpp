@@ -74,6 +74,7 @@ static_assert(sizeof(OUTSIDE_INITIAL_FILES) / sizeof(OUTSIDE_INITIAL_FILES[0]) <
               "Phrase pool exceeds selector capacity");
 
 BLEScan* scanner = nullptr;
+uint32_t bleDebugUntilMs = 0;
 portMUX_TYPE advertisementMux = portMUX_INITIALIZER_UNLOCKED;
 volatile int advertisedRssi = -127;
 volatile uint32_t advertisedSeenMs = 0;
@@ -354,6 +355,20 @@ class SpotAdvertisementCallbacks final : public BLEAdvertisedDeviceCallbacks {
  public:
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     const String address = advertisedDevice.getAddress().toString().c_str();
+
+    if (bleDebugUntilMs != 0 &&
+        static_cast<int32_t>(bleDebugUntilMs - millis()) > 0) {
+      const String name = advertisedDevice.haveName()
+                              ? advertisedDevice.getName().c_str()
+                              : "";
+      Serial.printf("[ble-debug] %s RSSI %d name '%s'%s\n",
+                    address.c_str(), advertisedDevice.getRSSI(),
+                    name.c_str(),
+                    address.equalsIgnoreCase(TARGET_SPOT_ADDRESS)
+                        ? "  <TARGET>"
+                        : "");
+    }
+
     if (!address.equalsIgnoreCase(TARGET_SPOT_ADDRESS)) return;
 
     portENTER_CRITICAL(&advertisementMux);
@@ -595,6 +610,13 @@ void handleBenchSerial() {
   if (!Serial.available()) return;
 
   const char command = static_cast<char>(Serial.read());
+
+  if (command == 'b' || command == 'B') {
+    bleDebugUntilMs = millis() + 20000UL;
+    Serial.println("[ble-debug] printing all nearby BLE advertisements for 20 seconds");
+    return;
+  }
+
   if (command != 't' && command != 'T') return;
 
   Serial.println("[bench] test requested; playing initial_01 in 5 seconds");
