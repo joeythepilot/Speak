@@ -4,8 +4,9 @@
 
 namespace speak::prototype {
 
-// Replace with the Blue Charm BC011 BLE address after scanning it.
-// Keep lowercase for comparison with the ESP32 BLE library's string format.
+// Replace with the Prototype 001 ESP32-C3 Spot's BLE address after we flash
+// the Spot firmware and read its address from Serial. Keep lowercase for
+// comparison with the ESP32 BLE library's string format.
 inline constexpr char TARGET_SPOT_ADDRESS[] = "00:00:00:00:00:00";
 
 // Proximity behavior. Entry is deliberately stronger than reset so the collar
@@ -26,11 +27,13 @@ inline constexpr uint32_t ESCALATION_2_DWELL_MS = 25000;
 inline constexpr uint32_t ESCALATION_3_DWELL_MS = 40000;
 inline constexpr uint32_t MIN_GAP_AFTER_PLAYBACK_MS = 2500;
 
-// Quiet button: momentary switch from this pin to GND, using INPUT_PULLUP.
+// Quiet button: one terminal to this GPIO, the other to GND. INPUT_PULLUP.
 inline constexpr gpio_num_t QUIET_BUTTON_PIN = GPIO_NUM_4;
 inline constexpr uint32_t QUIET_DURATION_MS = 15UL * 60UL * 1000UL;
 
-// MAX98357A I2S pins. Verify wiring before powering hardware.
+// NULLLAB NS4168 I2S amplifier.
+// Bench wiring: ESP32 3V3 -> amp VCC, GND -> GND.
+// These three GPIOs carry digital audio only.
 inline constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_12;
 inline constexpr gpio_num_t I2S_LRCLK_PIN = GPIO_NUM_11;
 inline constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_10;
