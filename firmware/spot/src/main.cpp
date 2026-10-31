@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <BLEAdvertising.h>
 #include <BLEDevice.h>
+#include <esp_bt.h>
 
 namespace {
 
@@ -36,6 +37,13 @@ void setup() {
   Serial.println("SPEAK! Prototype 001 - Back Door Spot");
 
   BLEDevice::init(SPOT_NAME);
+
+  // Prototype 001 uses a deliberately low advertising power so each Spot
+  // creates a tight interaction bubble instead of filling the whole room.
+  const esp_err_t txPowerResult =
+      esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);
+  Serial.printf("[spot] advertising TX power set to -12 dBm: %s\n",
+                txPowerResult == ESP_OK ? "OK" : "FAILED");
 
   BLEAdvertisementData advertisementData;
   advertisementData.setName(SPOT_NAME);
