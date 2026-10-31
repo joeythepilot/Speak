@@ -8,23 +8,34 @@ constexpr char SPOT_NAME[] = "SPEAK-OUTSIDE-001";
 
 // BLE advertising interval units are 0.625 ms. 0x0140 = 320 units = 200 ms.
 constexpr uint16_t ADVERTISING_INTERVAL = 0x0140;
+constexpr uint32_t STATUS_INTERVAL_MS = 3000;
 
-void printAddress() {
+uint32_t lastStatusMs = 0;
+
+void printStatus() {
   BLEAddress address = BLEDevice::getAddress();
   Serial.print("[spot] BLE address: ");
   Serial.println(address.toString().c_str());
+  Serial.print("[spot] advertising as ");
+  Serial.println(SPOT_NAME);
 }
 
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+
+  // Give native USB CDC a chance to enumerate, but don't block forever
+  // because the Spot must continue advertising even with no computer attached.
+  const uint32_t waitStartedMs = millis();
+  while (!Serial && millis() - waitStartedMs < 5000) {
+    delay(20);
+  }
+
   Serial.println();
   Serial.println("SPEAK! Prototype 001 - Back Door Spot");
 
   BLEDevice::init(SPOT_NAME);
-  printAddress();
 
   BLEAdvertisementData advertisementData;
   advertisementData.setName(SPOT_NAME);
@@ -46,11 +57,16 @@ void setup() {
 
   BLEDevice::startAdvertising();
 
-  Serial.print("[spot] advertising as ");
-  Serial.println(SPOT_NAME);
+  printStatus();
   Serial.println("[spot] copy the BLE address above into collar/include/prototype_config.h");
+  lastStatusMs = millis();
 }
 
 void loop() {
-  delay(1000);
+  const uint32_t now = millis();
+  if (now - lastStatusMs >= STATUS_INTERVAL_MS) {
+    printStatus();
+    lastStatusMs = now;
+  }
+  delay(20);
 }
