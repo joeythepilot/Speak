@@ -23,13 +23,15 @@ NULLLAB NS4168 I2S amplifier + matched 4 ohm / 3 W speaker.
 
 Bench wiring:
 
-| ESP32-S3 | NULLLAB amp |
+| Source | NULLLAB amp |
 | --- | --- |
-| 3V3 | VCC |
-| GND | GND |
-| GPIO12 | BCLK |
-| GPIO11 | LRCLK / WS |
-| GPIO10 | DIN |
+| Battery module 3.3V | VCC |
+| Common GND | GND |
+| ESP32 GPIO12 | BCLK |
+| ESP32 GPIO11 | LRCLK / WS |
+| ESP32 GPIO10 | DIN |
+
+Do **not** power the amplifier from the ESP32 board's 3V3 pin. The amplifier should use the battery module's separate regulated 3.3V rail so audio current does not load the ESP32 regulator.
 
 The speaker plugs only into the amplifier's speaker output. Neither speaker lead is connected to ESP32 ground.
 
