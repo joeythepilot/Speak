@@ -1,0 +1,45 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main, prototype-001]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware-ci.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-collar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Generate synthetic phrase library
+        run: python firmware/collar/tools/make_test_wav.py
+
+      - name: Validate phrase inventory and audio format
+        run: python firmware/collar/tools/validate_phrase_library.py
+
+      - name: Build collar firmware
+        run: pio run -d firmware/collar
+
+      - name: Build LittleFS image
+        run: pio run -d firmware/collar --target buildfs
+
+      - name: Build Back Door Spot firmware
+        run: pio run -d firmware/spot

@@ -1,0 +1,8 @@
+.pio/
+.vscode/.browse_c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+.DS_Store
+firmware/collar/data/outside/*.wav
+firmware/collar/data/outside_manifest.json
