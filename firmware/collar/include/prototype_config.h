@@ -32,7 +32,8 @@ inline constexpr gpio_num_t QUIET_BUTTON_PIN = GPIO_NUM_4;
 inline constexpr uint32_t QUIET_DURATION_MS = 15UL * 60UL * 1000UL;
 
 // NULLLAB NS4168 I2S amplifier.
-// Bench wiring: ESP32 3V3 -> amp VCC, GND -> GND.
+// IMPORTANT: power the amp from the battery module's regulated 3.3V output,
+// not from the ESP32 board's 3V3 rail. Grounds remain common.
 // These three GPIOs carry digital audio only.
 inline constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_12;
 inline constexpr gpio_num_t I2S_LRCLK_PIN = GPIO_NUM_11;
